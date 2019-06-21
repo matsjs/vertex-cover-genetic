@@ -1,135 +1,124 @@
 import numpy as np
 import time
 import random
-random.seed(21) # Magic number
-
-edges = []
-num_verts = 0
+import os
 
 def input_data(filename):
     global edges
     global num_verts
+    global num_edges
+    edges = np.array([])
+    num_verts = 0
+    num_edges = 0
     line_num = 0
     with open(filename, 'r') as f:
         for line in f.readlines():
             if len(line) > 0 and line[0] != 'c':
                 if line[0] == 'p':
                     num_verts = int(line.split()[2])
-                    edges = np.zeros((int(line.split()[3]), 2), int)
+                    num_edges = int(line.split()[3])
+                    edges = np.zeros((num_edges, 2),dtype=np.int_)
                 else:
                     np.put(edges, (line_num*2, line_num*2+1), (int(line.split()[0])-1, int(line.split()[1])-1))
                     line_num += 1
 
 class Agent:
     # Initialization of agent
-    def __init__(self, generation, dna_a, dna_b, mutation_chance=5):
+    def __init__(self, generation, dna, mutation_rate): 
         self.generation = generation
-        self.dna = np.zeros(len(dna_a), int)
-        # Chance that gene will mutate. Initially high rate, then quickly reducing.
-        self.mutation_rate = mutation_chance - (mutation_chance/(1+np.exp(-0.1*(generation-np.sqrt(len(dna_a))))))
-        self.genesis(dna_a, dna_b)
+        self.dna = dna
+        self.mutation_rate = mutation_rate
+        self.fitness = 0
+    
+    # Returns fitness of agent
+    def update_fitness(self):
+      vert_cover_fitness2 = np.full([num_edges], -num_edges)
+      mask = (self.dna[edges[:, 0]] | self.dna[edges[:, 1]]).astype(bool)
+      vert_cover_fitness2[mask] = 1.0
 
+      self.fitness = np.sum(vert_cover_fitness2) - np.sum(self.dna)
+      return self.fitness
 
     # Changes genetic make-up 
     def mutate(self):
-        self.dna = [self.flip(gene) if (random.randint(0,100) < self.mutation_rate) else gene for gene in self.dna]
-        return self
+      self.dna = self.dna.copy()
+      mutation_mask = np.random.rand(num_verts)<self.mutation_rate/num_verts
+      self.dna[mutation_mask] = 1 - self.dna[mutation_mask]
+      return self
     
-    def flip(self, num):
-        if num == 0:
-            return 1
-        else:
-            return 0
-
     # Breeds this individual with another creating offspring
     def breed(self, other, offspring_number):
-        return [Agent(self.generation + 1, self.dna, other.dna) for i in range(offspring_number)]
-        
-    # Creates a wholly new genetic make-up at random
-    def genesis(self, dna_a, dna_b, selection_percent = 50):
-        self.dna = [dna_a[i] if (random.randint(0,100) < selection_percent) else dna_b[i] for i in range(len(dna_a))]
-        self.fitness = self.set_fitness()
-
-    # Returns fitness of agent
-    def set_fitness(self):
-        vert_cover = []
-        for edge in edges:
-            if self.dna[edge[0]] and self.dna[edge[1]]:
-                vert_cover.append(0.5)
-            elif self.dna[edge[0]] or self.dna[edge[1]]:
-                vert_cover.append(1)
-            else:
-                vert_cover.append(-2)
-        # vert_cover = [1 if (self.dna[edge[0]] == 1 or self.dna[edge[1]] == 1) else -1 for edge in edges]
-        return np.sum(vert_cover)
-        # num_chosen_verts = np.sum(self.dna)
-        # if num_chosen_verts == 0:
-        #     return 0
-        # else:
-        #     return (np.sum(vert_cover)**2/np.sum(self.dna))
-
-    def __str__(self):
-        return ('Generation: {} | Fitness: {}'.format(self.generation,self.fitness))
+      selection = np.random.choice([0, 1], size=(num_verts)).astype(np.bool)
+      dna = np.choose(selection, [self.dna, other.dna])
+      return [Agent(self.generation + 1,
+                      dna,
+                      self.mutation_rate)
+                      for i in range(offspring_number)]
 
 
 class Genetic_vertex_cover:
+
     # Selects solution method and returns agents
-    def solve(self, filename, exit_condition='convergence', max_generations=100, num_agents=10):
+    def solve(self, filename, exit_condition='convergence', num_agents=50, mutation_rate=1):
         """ Set up problem space
-
-        Keyword arguments:
-        value_weights -- [(int, int),...,(int, int)] 
-        knapsack_size -- int
-        exit_condition -- 'convergence', 'max_gen'
         """
-        print("Loading data..")
         input_data(filename)
-        self.max_val_gen = []
-        self.num_agents = num_agents
-        self.first_generation = [Agent(1, np.ones(num_verts), np.zeros(num_verts)) for i in range(self.num_agents)]
-        self.max_val_gen.append(np.max([agent.fitness for agent in self.first_generation]))
-        result = 0
-        if exit_condition == 'convergence':
-            result= self.converge_solution(self.first_generation, max_generations)
-        elif exit_condition == 'max_gen'  and max_generations > 0:
-            result= self.gen_cap_solution(self.first_generation, max_generations)
 
+        self.fitness_scores = []
+        self.num_agents = num_agents
+        
+        initial_dna = np.ones(num_verts, dtype=np.int_) #dict([(x,1) for x in range(num_verts)]) #
+        first_generation = [Agent(1, initial_dna , mutation_rate) for i in range(self.num_agents)] 
+        
+        performance = [agent.update_fitness() for agent in first_generation] 
+        
+        self.fitness_scores.append(np.max(performance))
+        
+        result = self.converge_solution(first_generation)
+        
         result.sort(key=lambda ag: ag.fitness, reverse=True)
         return result[0]
 
-
-    def converge_solution(self, agents, max_generations):
+      
+    def converge_solution(self, agents):
         ''' Solution by convergence of max fitness. Stops at max_generations if convergence has not been reached.
         '''
         curr_gen = 0
         delta_fitness = 2
+        start_time = time.time()
+        
+        selection_time = 0
+        breed_time = 0
+        mutation_time = 0
+        fitness_time = 0
 
-        while delta_fitness > 0.1 and curr_gen < max_generations: # Convergence when best agent stops improving
+        while delta_fitness > 1 and time.time() - start_time < 59 : # Convergence when best agent stops improving
+            strt = time.time()
             winners = self.select_winners(agents) # Select winners and lucky losers
+            selection_time += time.time() - strt
+            
+            strt = time.time()
             next_gen = self.breed(winners) # Breed next generation
+            breed_time += time.time() - strt
+            
+            strt = time.time()
             mut_gen = [agent.mutate() for agent in next_gen] # Mutate generations
-            current_fitness = np.max([agent.fitness for agent in mut_gen]) # Calculate fitness
-            if len(self.max_val_gen) >= 3:
-                delta_fitness = np.mean(abs(np.diff(self.max_val_gen[-3:])))
+            mutation_time += time.time() - strt
+
+            strt = time.time()
+            performance = [agent.update_fitness() for agent in mut_gen] # Update fitness
+            fitness_time += time.time() - strt
+            
+            if len(self.fitness_scores) >= 50:
+                delta_fitness = abs(np.sum(np.diff(self.fitness_scores[-50:])))
             agents = mut_gen
-            mut_rate = agents[0].mutation_rate
+
             curr_gen += 1
-            self.max_val_gen.append(current_fitness)
-            print(f"Generation {curr_gen}, delta {delta_fitness}, mutation rate {mut_rate}")
-        return agents
-
-
-    def gen_cap_solution(self, agents, max_gen):
-        ''' Breeds a given number of generations, irrespective of fitness.
-        '''
-        for i in range(max_gen):
-            winners = self.select_winners(agents)
-            next_gen = self.breed(winners)
-            mut_gen = [agent.mutate() for agent in next_gen]
-            agents = mut_gen
-            mut_rate = agents[0].mutation_rate
-            self.max_val_gen.append(np.max([agent.fitness for agent in agents]))
-            print(f"Generation {i}/{max_gen}, mutation rate {mut_rate}")
+            self.fitness_scores.append( np.max(performance) )
+        
+        times = np.sum([selection_time,breed_time,mutation_time,fitness_time])
+#         print(f'Selection: {round(selection_time*100/times,2)}, Breeding: {round(breed_time*100/times,2)}, Mutation: {round(100*mutation_time/times,2)}, Fitness: {round(100*fitness_time/times,2)}')
+        
         return agents
 
     def select_winners(self, agents):
@@ -139,7 +128,7 @@ class Genetic_vertex_cover:
         lucky_losers = round(self.num_agents * 0.05)
         winners = sorted(agents, key=lambda ag: ag.fitness, reverse=True)
         return winners[:top_n] + random.sample(winners[top_n:], lucky_losers)
-
+      
     def breed(self, breeders):
         ''' Breed agents
         '''
@@ -149,41 +138,38 @@ class Genetic_vertex_cover:
         for i in range(0,len(breeders)//2):
             children += breeders[i*2].breed(breeders[i*2+1], offspring)
         return children
+      
+    def create_mut_table(self, mutation_rate):
+      return [sum(np.random.binomial(num_verts, mutation_rate/num_verts, 20000) == i)/20000 for i in range(10)]
 
 
-"""
-Problem space initialization
-"""
-# def run_timetests(tests):
-#     results = [['Dynamic Programming', 'Greedy Algorithm', 'Genetic Algorithm']]
-#     for test in tests:
-#         functions = [knapsack_dp, knapsack_greedy, Genetic_knapsack()]
-#         test_results = []
-#         for func in functions:
-#             start = time.time()
-#             try:
-#                 result = func.solve(test[0], test[1])                
-#             except (MemoryError, RecursionError) as re:
-#                 result = None
-#             finally:
-#                 end = time.time()
-#                 test_results.append((result, (end-start)/100))
-#         results.append(test_results)
+def benchmark():
+    test = Genetic_vertex_cover()
+    seeds = [i for i in range(10)]
 
-#     return results
+    for dataset in sorted(os.listdir('./data')):
+          generations = []
+          fitness = []
+          deltas = []
+          for seed in seeds:
+              random.seed(seed)
+              np.random.seed(seed)
+              start = time.time()
+              output = test.solve('./data/' + dataset, num_agents= 50, exit_condition= 'convergence', mutation_rate = 1)
+              generations.append(output.generation)
+              fitness.append(output.fitness)
+              deltas.append(time.time() - start)
+          print(f"Dataset: {dataset} | Vertices/ Edges {num_verts}/{num_edges} | Num agents {50} | Time {np.mean(deltas)} | Generations {np.mean(generations)} | Fitness {np.mean(fitness)}/Fitness {np.max(fitness)}") 
 
-# './data/vc-exact_001.gr'
+
 def plot_fitness():
     test = Genetic_vertex_cover()
     start = time.time()
-    final_gen = test.solve('./data/vc-exact_005.gr', max_generations=100, num_agents=10, exit_condition='convergence')
+    final_gen = test.solve('./data/vc-exact_031.gr', num_agents= 50, exit_condition= 'convergence', mutation_rate = 1)
     end = time.time()
     print("Time taken: ", end-start)
     print('Fitness: ', final_gen.fitness)
-    # print(final_gen.dna)
     from matplotlib import pyplot as plt
-    plt.plot([i for i in range(len(test.max_val_gen))],test.max_val_gen)
+    plt.plot([i for i in range(len(test.fitness_scores))],test.fitness_scores)
     plt.show()
-
-
 plot_fitness()
